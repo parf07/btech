@@ -9,16 +9,16 @@ app.use(express.static(path.join(__dirname, 'pages')));
 
 // Routes for each page
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'pages', 'home.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
-app.get('/about', (req, res) => {
-    res.sendFile(path.join(__dirname, 'pages', 'about.html'));
-});
+// app.get('/about', (req, res) => {
+//     res.sendFile(path.join(__dirname, 'pages', 'about.html'));
+// });
 
-app.get('/contactus', (req, res) => {
-    res.sendFile(path.join(__dirname, 'pages', 'contactus.html'));
-});
+// app.get('/contactus', (req, res) => {
+//     res.sendFile(path.join(__dirname, 'pages', 'contactus.html'));
+// });
 
 // Start server
 app.listen(PORT, () => {
