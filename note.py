@@ -1,0 +1,311 @@
+import json
+
+notebook = {
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Fake News Detection with FNN + TF-IDF + TruncatedSVD\n",
+    "This notebook trains a Feedforward Neural Network (FNN) on TF-IDF + TruncatedSVD features to classify news as fake or real."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Imports\n",
+    "import os\n",
+    "import re\n",
+    "import joblib\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+    "from sklearn.decomposition import TruncatedSVD\n",
+    "from sklearn.preprocessing import StandardScaler\n",
+    "from sklearn.utils import class_weight\n",
+    "from sklearn.metrics import classification_report, accuracy_score, confusion_matrix\n",
+    "\n",
+    "import tensorflow as tf\n",
+    "from tensorflow.keras import layers, models, callbacks\n",
+    "\n",
+    "print(\"pandas version:\", pd.__version__)\n",
+    "print(\"tensorflow version:\", tf.__version__)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- USER SETTINGS ----------\n",
+    "MAX_FEATURES = 5000\n",
+    "SVD_COMPONENTS = 500\n",
+    "BATCH_SIZE = 64\n",
+    "EPOCHS = 30\n",
+    "RANDOM_STATE = 42"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Load Dataset ----------\n",
+    "# Replace with your CSV path if needed\n",
+    "# df = pd.read_csv('path/to/news.csv')\n",
+    "display(df.head(3))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Create content column ----------\n",
+    "if 'content' not in df.columns:\n",
+    "    df['content'] = (df.get('title', '').fillna('') + ' ' + df.get('text', '').fillna('')).str.strip()\n",
+    "\n",
+    "# Fast text cleaning\n",
+    "fallback_stopwords = {\n",
+    "    \"the\",\"and\",\"is\",\"in\",\"to\",\"of\",\"a\",\"for\",\"on\",\"with\",\"as\",\"that\",\"this\",\n",
+    "    \"it\",\"by\",\"an\",\"be\",\"are\",\"from\",\"or\",\"at\",\"was\",\"were\",\"has\",\"have\",\"had\",\n",
+    "    \"not\",\"but\",\"they\",\"their\",\"i\",\"we\",\"you\",\"he\",\"she\",\"them\",\"his\",\"her\"\n",
+    "}\n",
+    "def clean_text_fast(text):\n",
+    "    if pd.isna(text):\n",
+    "        return \"\"\n",
+    "    s = str(text).lower()\n",
+    "    s = re.sub(r'http\\S+', ' ', s)\n",
+    "    s = re.sub(r'[^a-z0-9\\s]', ' ', s)\n",
+    "    s = re.sub(r'\\s+', ' ', s).strip()\n",
+    "    tokens = s.split()\n",
+    "    tokens = [t for t in tokens if t not in fallback_stopwords and len(t) > 2]\n",
+    "    return \" \".join(tokens)\n",
+    "\n",
+    "df['clean'] = df['content'].apply(clean_text_fast)\n",
+    "display(df[['content','clean']].head(3))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Ensure label is numeric ----------\n",
+    "if 'label' not in df.columns:\n",
+    "    raise KeyError(\"DataFrame must have a 'label' column with 0 (fake) and 1 (real).\")\n",
+    "\n",
+    "if df['label'].dtype == object:\n",
+    "    df['label'] = df['label'].str.lower().map({'fake':0,'false':0,'satire':0,'real':1,'true':1}).fillna(df['label'])\n",
+    "df['label'] = pd.to_numeric(df['label'], errors='coerce')\n",
+    "if df['label'].isna().any():\n",
+    "    raise ValueError(\"Some labels are not numeric after conversion.\")\n",
+    "\n",
+    "print(\"Label distribution:\\n\", df['label'].value_counts())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Train/Test split ----------\n",
+    "X = df['clean'].values\n",
+    "y = df['label'].astype(int).values\n",
+    "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE)\n",
+    "print(\"Train/Test sizes:\", len(X_train), len(X_test))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- TF-IDF vectorization ----------\n",
+    "tfidf = TfidfVectorizer(max_features=MAX_FEATURES, ngram_range=(1,2))\n",
+    "X_train_tfidf = tfidf.fit_transform(X_train)\n",
+    "X_test_tfidf  = tfidf.transform(X_test)\n",
+    "print(\"TF-IDF shapes (sparse):\", X_train_tfidf.shape, X_test_tfidf.shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- TruncatedSVD ----------\n",
+    "svd = TruncatedSVD(n_components=SVD_COMPONENTS, random_state=RANDOM_STATE)\n",
+    "X_train_reduced = svd.fit_transform(X_train_tfidf)\n",
+    "X_test_reduced  = svd.transform(X_test_tfidf)\n",
+    "print(\"After SVD shapes:\", X_train_reduced.shape, X_test_reduced.shape)\n",
+    "\n",
+    "# Optional scaling\n",
+    "scaler = StandardScaler()\n",
+    "X_train_reduced = scaler.fit_transform(X_train_reduced)\n",
+    "X_test_reduced  = scaler.transform(X_test_reduced)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Build FNN ----------\n",
+    "input_dim = X_train_reduced.shape[1]\n",
+    "def make_fnn(input_dim):\n",
+    "    model = models.Sequential([\n",
+    "        layers.Input(shape=(input_dim,)),\n",
+    "        layers.Dense(256, activation='relu'),\n",
+    "        layers.Dropout(0.4),\n",
+    "        layers.Dense(64, activation='relu'),\n",
+    "        layers.Dropout(0.3),\n",
+    "        layers.Dense(1, activation='sigmoid')\n",
+    "    ])\n",
+    "    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),\n",
+    "                  loss='binary_crossentropy',\n",
+    "                  metrics=['accuracy'])\n",
+    "    return model\n",
+    "\n",
+    "model = make_fnn(input_dim)\n",
+    "model.summary()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Class weights ----------\n",
+    "cw = dict(enumerate(class_weight.compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)))\n",
+    "print(\"Class weights:\", cw)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Train FNN ----------\n",
+    "es = callbacks.EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True)\n",
+    "history = model.fit(X_train_reduced, y_train,\n",
+    "                    validation_split=0.1,\n",
+    "                    epochs=EPOCHS,\n",
+    "                    batch_size=BATCH_SIZE,\n",
+    "                    callbacks=[es],\n",
+    "                    class_weight=cw,\n",
+    "                    verbose=2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Evaluate ----------\n",
+    "y_prob = model.predict(X_test_reduced).ravel()\n",
+    "y_pred = (y_prob >= 0.5).astype(int)\n",
+    "\n",
+    "print(\"Accuracy:\", accuracy_score(y_test, y_pred))\n",
+    "print(\"Classification report:\\n\", classification_report(y_test, y_pred, digits=4))\n",
+    "\n",
+    "cm = confusion_matrix(y_test, y_pred)\n",
+    "plt.figure(figsize=(5,4))\n",
+    "sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['fake','real'], yticklabels=['fake','real'])\n",
+    "plt.xlabel('Predicted'); plt.ylabel('True'); plt.title('Confusion Matrix')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Training curves\n",
+    "plt.figure(figsize=(10,4))\n",
+    "plt.subplot(1,2,1)\n",
+    "plt.plot(history.history['loss'], label='train loss')\n",
+    "plt.plot(history.history['val_loss'], label='val loss')\n",
+    "plt.legend(); plt.title('Loss')\n",
+    "\n",
+    "plt.subplot(1,2,2)\n",
+    "plt.plot(history.history['accuracy'], label='train acc')\n",
+    "plt.plot(history.history['val_accuracy'], label='val acc')\n",
+    "plt.legend(); plt.title('Accuracy')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Save artifacts ----------\n",
+    "os.makedirs(\"models\", exist_ok=True)\n",
+    "model.save(\"models/fnn_svd_model.h5\")\n",
+    "joblib.dump(tfidf, \"models/tfidf_vectorizer.joblib\")\n",
+    "joblib.dump(svd, \"models/svd_truncated.joblib\")\n",
+    "joblib.dump(scaler, \"models/scaler.joblib\")\n",
+    "print(\"Saved all model artifacts.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ---------- Quick inference helper ----------\n",
+    "def predict_text(text, threshold=0.5):\n",
+    "    clean = clean_text_fast(text)\n",
+    "    v = tfidf.transform([clean])\n",
+    "    v = svd.transform(v)\n",
+    "    v = scaler.transform(v)\n",
+    "    p = model.predict(v).ravel()[0]\n",
+    "    return p, (\"real\" if p >= threshold else \"fake\")\n",
+    "\n",
+    "# Example\n",
+    "ex = \"Breaking: government announces free electricity for all citizens\"\n",
+    "print(\"Example prediction:\", predict_text(ex))"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.11"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+
+# Save notebook
+with open("FakeNews_FNN_SVD.ipynb", "w", encoding="utf-8") as f:
+    json.dump(notebook, f, indent=2)
+
+print("Notebook 'FakeNews_FNN_SVD.ipynb' created successfully.")
